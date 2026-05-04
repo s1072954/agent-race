@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -11,7 +11,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 async def fetch_market_snapshot() -> dict[str, Any]:
     snapshot: dict[str, Any] = {
-        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "sources": {},
         "notes": [],
     }
