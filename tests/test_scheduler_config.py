@@ -19,3 +19,26 @@ def test_limit_event_applies_fallback_interval(tmp_path) -> None:
     assert config["fallback_active"] is True
     assert event["fallback_tick_seconds"] == 900
     assert store.get_state("last_limit_event")["model"] == "model-a"
+
+
+def test_records_market_opportunities(tmp_path) -> None:
+    store = AgentRaceStore(tmp_path / "race.sqlite", tmp_path / "agents")
+    store.record_opportunities(
+        [
+            {
+                "kind": "funding_rate",
+                "symbol": "BTCUSDT",
+                "title": "BTC funding candidate",
+                "gross_edge_bps": 8,
+                "estimated_cost_bps": 2.5,
+                "net_edge_bps": 5.5,
+                "confidence": 0.42,
+                "status": "actionable_research",
+            }
+        ]
+    )
+
+    opportunities = store.recent_opportunities()
+    assert len(opportunities) == 1
+    assert opportunities[0]["symbol"] == "BTCUSDT"
+    assert opportunities[0]["payload_json"]["status"] == "actionable_research"

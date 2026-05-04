@@ -62,6 +62,7 @@ class AgentRaceScheduler:
             self.store.record_event("cycle_started", "Agent race cycle started")
             market_snapshot = await fetch_market_snapshot()
             self.store.set_state("last_market_snapshot", market_snapshot)
+            self.store.record_opportunities(market_snapshot.get("opportunities", []))
             semaphore = asyncio.Semaphore(self.settings.max_parallel_llm_calls)
 
             async def run_agent(agent: RootAgent) -> None:
@@ -112,7 +113,7 @@ class AgentRaceScheduler:
         return "timeout"
 
     async def _summarize_arena(self) -> None:
-        overview = self.store.overview()
+        overview = self._compact_overview()
         if not self.settings.can_call_llm:
             self.store.set_state(
                 "arena_summary",
@@ -155,6 +156,53 @@ class AgentRaceScheduler:
                 "model": self.settings.nvidia_summary_model,
             },
         )
+
+    def _compact_overview(self) -> dict[str, Any]:
+        overview = self.store.overview()
+        market = overview.get("last_market_snapshot", {})
+        return {
+            "agents": [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "model": item["model"],
+                    "status": item["status"],
+                    "score": round(float(item["score"]), 4),
+                    "last_tick_at": item["last_tick_at"],
+                    "last_summary": (item["last_summary"] or "")[:500],
+                }
+                for item in overview["agents"]
+            ],
+            "top_market_opportunities": overview.get("opportunities", [])[:12],
+            "recent_strategy_candidates": [
+                {
+                    "ts": item["ts"],
+                    "agent_id": item["agent_id"],
+                    "title": item["title"],
+                    "expected_edge_bps": item["expected_edge_bps"],
+                    "risk_score": item["risk_score"],
+                }
+                for item in overview.get("strategies", [])[:10]
+            ],
+            "market_snapshot": {
+                "ts": market.get("ts"),
+                "data_quality": market.get("data_quality", []),
+                "notes": market.get("notes", [])[:8],
+                "top_spreads": market.get("spreads", [])[:10],
+                "top_funding_rates": market.get("funding_rates", [])[:10],
+            },
+            "llm_usage_totals": overview["llm_usage"]["totals"],
+            "recent_errors": [
+                {
+                    "ts": item["ts"],
+                    "agent_id": item["agent_id"],
+                    "kind": item["kind"],
+                    "message": item["message"][:300],
+                }
+                for item in overview["events"]
+                if "error" in item["kind"] or "fallback" in item["kind"]
+            ][:8],
+        }
 
     def runtime_status(self) -> dict[str, Any]:
         config = self._scheduler_config()

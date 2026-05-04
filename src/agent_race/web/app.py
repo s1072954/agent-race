@@ -254,6 +254,10 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="agents" id="agents"></div>
     </section>
     <section class="panel">
+      <h2>市場掃描候選</h2>
+      <table><thead><tr><th>時間</th><th>類型</th><th>標的</th><th>候選機會</th><th>毛邊際 bps</th><th>估計成本 bps</th><th>淨邊際 bps</th><th>狀態</th></tr></thead><tbody id="opportunities"></tbody></table>
+    </section>
+    <section class="panel">
       <h2>候選策略</h2>
       <table><thead><tr><th>時間</th><th>Agent</th><th>標題</th><th>預估優勢 bps</th><th>風險</th></tr></thead><tbody id="strategies"></tbody></table>
     </section>
@@ -312,6 +316,21 @@ DASHBOARD_HTML = """<!doctype html>
         subagent_completed: "Sub-agent 完成",
         subagent_error: "Sub-agent 錯誤",
         llm_limit_fallback: "LLM 超額保護"
+      };
+      return labels[text(value)] || text(value);
+    }
+    function opportunityKindLabel(value) {
+      const labels = {
+        spot_spread: "現貨跨所價差",
+        funding_rate: "資金費率",
+      };
+      return labels[text(value)] || text(value);
+    }
+    function opportunityStatusLabel(value) {
+      const labels = {
+        actionable_research: "可研究",
+        watch: "觀察",
+        ignore: "忽略",
       };
       return labels[text(value)] || text(value);
     }
@@ -426,6 +445,10 @@ DASHBOARD_HTML = """<!doctype html>
           <p class="summary">${html(agent.last_summary || decision.summary)}</p>
         </article>`;
       }).join("");
+
+      document.getElementById("opportunities").innerHTML = (data.opportunities || []).map(item =>
+        `<tr><td>${twTime(item.ts)}</td><td>${html(opportunityKindLabel(item.kind))}</td><td><code>${html(item.symbol)}</code></td><td>${html(item.title)}</td><td>${Number(item.gross_edge_bps || 0).toFixed(3)}</td><td>${Number(item.estimated_cost_bps || 0).toFixed(3)}</td><td>${Number(item.net_edge_bps || 0).toFixed(3)}</td><td>${html(opportunityStatusLabel(item.status))}</td></tr>`
+      ).join("");
 
       document.getElementById("strategies").innerHTML = (data.strategies || []).map(item =>
         `<tr><td>${twTime(item.ts)}</td><td><code>${html(item.agent_id)}</code></td><td>${html(item.title)}</td><td>${html(item.expected_edge_bps)}</td><td>${html(item.risk_score)}</td></tr>`

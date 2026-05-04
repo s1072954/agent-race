@@ -84,7 +84,7 @@ class RootAgent:
             "subagent_results": [item.model_dump() for item in subagent_results],
             "market_snapshot_ts": market_snapshot.get("ts"),
         }
-        score_delta = self._score_delta(decision, subagent_results)
+        score_delta = self._score_delta(decision, subagent_results, market_snapshot)
         self.store.update_agent_status(
             agent_id=self.spec.id,
             status=status,
@@ -158,13 +158,26 @@ class RootAgent:
             )
         return results
 
-    def _score_delta(self, decision: RootAgentDecision, subagent_results: list[SubAgentResult]) -> float:
+    def _score_delta(
+        self,
+        decision: RootAgentDecision,
+        subagent_results: list[SubAgentResult],
+        market_snapshot: dict[str, Any],
+    ) -> float:
+        opportunities = market_snapshot.get("opportunities", [])
+        best_net_edge = max((float(item.get("net_edge_bps") or 0) for item in opportunities), default=0.0)
+        has_actionable_evidence = any(item.get("status") == "actionable_research" for item in opportunities)
         if not decision.strategy_candidates:
-            return round(0.05 * decision.confidence, 4)
+            no_trade_bonus = 0.035 if not has_actionable_evidence else 0.01
+            return round(no_trade_bonus * decision.confidence, 4)
         avg_edge = sum(item.expected_edge_bps for item in decision.strategy_candidates) / len(decision.strategy_candidates)
         avg_risk = sum(item.risk_score for item in decision.strategy_candidates) / len(decision.strategy_candidates)
         subagent_bonus = sum(item.confidence for item in subagent_results) * 0.03
-        return round(max(0.0, avg_edge / 100 - avg_risk * 0.03 + decision.confidence * 0.1 + subagent_bonus), 4)
+        evidence_bonus = max(0.0, best_net_edge) * 0.015
+        score = avg_edge / 120 - avg_risk * 0.03 + decision.confidence * 0.08 + subagent_bonus + evidence_bonus
+        if not has_actionable_evidence:
+            score *= 0.45
+        return round(max(0.0, score), 4)
 
     def _read_memory_note(self) -> str:
         path = self.workspace / "memory.md"

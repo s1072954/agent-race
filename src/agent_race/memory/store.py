@@ -71,6 +71,20 @@ class AgentRaceStore:
                     payload_json text not null default '{}'
                 );
 
+                create table if not exists opportunities (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    kind text not null,
+                    symbol text not null,
+                    title text not null,
+                    gross_edge_bps real not null default 0,
+                    estimated_cost_bps real not null default 0,
+                    net_edge_bps real not null default 0,
+                    confidence real not null default 0,
+                    status text not null default 'watch',
+                    payload_json text not null default '{}'
+                );
+
                 create table if not exists llm_calls (
                     id integer primary key autoincrement,
                     ts text not null,
@@ -173,6 +187,41 @@ class AgentRaceStore:
                     json.dumps(payload, ensure_ascii=False),
                 ),
             )
+
+    def record_opportunities(self, opportunities: list[dict[str, Any]]) -> None:
+        if not opportunities:
+            return
+        now = utc_now()
+        with self._lock, self._conn:
+            self._conn.executemany(
+                """
+                insert into opportunities
+                    (ts, kind, symbol, title, gross_edge_bps, estimated_cost_bps, net_edge_bps, confidence, status, payload_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        now,
+                        item.get("kind", "unknown"),
+                        item.get("symbol", "unknown"),
+                        item.get("title", ""),
+                        float(item.get("gross_edge_bps") or 0),
+                        float(item.get("estimated_cost_bps") or 0),
+                        float(item.get("net_edge_bps") or 0),
+                        float(item.get("confidence") or 0),
+                        item.get("status", "watch"),
+                        json.dumps(item, ensure_ascii=False),
+                    )
+                    for item in opportunities
+                ],
+            )
+
+    def recent_opportunities(self, limit: int = 30) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "select * from opportunities order by id desc limit ?", (limit,)
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def record_llm_call(
         self,
@@ -346,6 +395,7 @@ class AgentRaceStore:
             "agents": self.list_agents(),
             "events": self.recent_events(limit=25),
             "strategies": self.recent_strategies(limit=20),
+            "opportunities": self.recent_opportunities(limit=30),
             "llm_usage": self.llm_usage(limit=25),
             "arena_summary": self.get_state("arena_summary", {}),
             "last_market_snapshot": self.get_state("last_market_snapshot", {}),
