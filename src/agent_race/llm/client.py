@@ -22,6 +22,10 @@ class LLMRateLimitError(LLMError):
         self.retry_after = retry_after
 
 
+class LLMUsageLimitError(LLMRateLimitError):
+    pass
+
+
 @dataclass
 class ChatResult:
     content: str
@@ -78,6 +82,12 @@ class NvidiaChatClient:
                 if response.status_code == 429:
                     retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                     raise LLMRateLimitError("NVIDIA API rate limited this request", retry_after)
+                if _is_usage_limit_response(response.status_code, response.text):
+                    retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                    raise LLMUsageLimitError(
+                        f"NVIDIA API usage limit returned HTTP {response.status_code}: {response.text[:300]}",
+                        retry_after,
+                    )
                 if response.status_code >= 400:
                     raise LLMError(f"NVIDIA API returned HTTP {response.status_code}: {response.text[:300]}")
                 data = response.json()
@@ -97,6 +107,14 @@ class NvidiaChatClient:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 if self.store:
                     self.store.record_llm_call(agent_id, model, "rate_limited", latency_ms, {}, str(exc))
+                    self.store.record_limit_fallback(
+                        agent_id=agent_id,
+                        model=model,
+                        message=str(exc),
+                        retry_after_seconds=exc.retry_after,
+                        default_tick_seconds=self.settings.tick_seconds,
+                        default_fallback_tick_seconds=self.settings.fallback_tick_seconds,
+                    )
                 if attempt >= retries:
                     raise
                 await asyncio.sleep(exc.retry_after or min(30, 2**attempt * 5))
@@ -117,3 +135,22 @@ def _parse_retry_after(raw: str | None) -> float | None:
         return max(0.0, float(raw))
     except ValueError:
         return None
+
+
+def _is_usage_limit_response(status_code: int, body: str) -> bool:
+    if status_code not in {402, 403}:
+        return False
+    lowered = body.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "quota",
+            "rate limit",
+            "rate_limit",
+            "usage limit",
+            "credit",
+            "credits",
+            "exceeded",
+            "too many requests",
+        )
+    )

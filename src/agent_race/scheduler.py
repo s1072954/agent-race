@@ -25,6 +25,7 @@ class AgentRaceScheduler:
         ]
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+        self._schedule_changed = asyncio.Event()
         self._tick_count = 0
         self._running_once = asyncio.Lock()
 
@@ -45,6 +46,16 @@ class AgentRaceScheduler:
         asyncio.create_task(self.run_once())
         return True
 
+    def update_config(self, tick_seconds: int, fallback_tick_seconds: int) -> dict[str, Any]:
+        config = self.store.update_scheduler_config(
+            tick_seconds=tick_seconds,
+            fallback_tick_seconds=fallback_tick_seconds,
+            updated_by="dashboard",
+            fallback_active=False,
+        )
+        self._schedule_changed.set()
+        return config
+
     async def run_once(self) -> None:
         async with self._running_once:
             self._tick_count += 1
@@ -63,15 +74,42 @@ class AgentRaceScheduler:
             self.store.record_event("cycle_completed", "Agent race cycle completed")
 
     async def _loop(self) -> None:
+        next_run_at = asyncio.get_running_loop().time()
         while not self._stop.is_set():
+            wait_seconds = max(0.0, next_run_at - asyncio.get_running_loop().time())
+            wait_result = await self._wait_for_schedule(wait_seconds)
+            if wait_result == "stop":
+                break
+            if wait_result == "config":
+                interval = self._scheduler_config()["tick_seconds"]
+                next_run_at = asyncio.get_running_loop().time() + interval
+                continue
             try:
                 await self.run_once()
             except Exception as exc:  # noqa: BLE001
                 self.store.record_event("scheduler_error", str(exc))
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.settings.tick_seconds)
-            except asyncio.TimeoutError:
-                continue
+            next_run_at = asyncio.get_running_loop().time() + self._scheduler_config()["tick_seconds"]
+
+    async def _wait_for_schedule(self, wait_seconds: float) -> str:
+        if wait_seconds <= 0:
+            return "timeout"
+        stop_task = asyncio.create_task(self._stop.wait())
+        changed_task = asyncio.create_task(self._schedule_changed.wait())
+        done, pending = await asyncio.wait(
+            {stop_task, changed_task},
+            timeout=wait_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        with suppress(asyncio.CancelledError):
+            await asyncio.gather(*pending)
+        if stop_task in done:
+            return "stop"
+        if changed_task in done:
+            self._schedule_changed.clear()
+            return "config"
+        return "timeout"
 
     async def _summarize_arena(self) -> None:
         overview = self.store.overview()
@@ -119,13 +157,23 @@ class AgentRaceScheduler:
         )
 
     def runtime_status(self) -> dict[str, Any]:
+        config = self._scheduler_config()
         return {
             "scheduler_enabled": self.settings.scheduler_enabled,
             "running": self._task is not None and not self._task.done(),
-            "tick_seconds": self.settings.tick_seconds,
+            "tick_seconds": config["tick_seconds"],
+            "fallback_tick_seconds": config["fallback_tick_seconds"],
+            "fallback_active": config["fallback_active"],
+            "scheduler_config": config,
             "tick_count": self._tick_count,
             "agent_count": len(self.agents),
             "models": [agent.spec.model for agent in self.agents],
             "live_trading_enabled": self.settings.live_trading_enabled,
             "shell_tools_enabled": self.settings.shell_tools_enabled,
         }
+
+    def _scheduler_config(self) -> dict[str, Any]:
+        return self.store.scheduler_config(
+            self.settings.tick_seconds,
+            self.settings.fallback_tick_seconds,
+        )

@@ -58,6 +58,7 @@ class Settings:
     max_subagent_tasks: int
     base_path: str
     tick_seconds: int
+    fallback_tick_seconds: int
     summary_every_ticks: int
     db_path: Path
     workspace_dir: Path
@@ -94,6 +95,7 @@ def load_settings(env_path: str | Path = DEFAULT_ENV_PATH) -> Settings:
         max_subagent_tasks=max(0, env_int("AGENT_RACE_MAX_SUBAGENT_TASKS", 1)),
         base_path=base_path.rstrip("/"),
         tick_seconds=max(60, env_int("AGENT_RACE_TICK_SECONDS", 900)),
+        fallback_tick_seconds=max(60, env_int("AGENT_RACE_FALLBACK_TICK_SECONDS", 900)),
         summary_every_ticks=max(1, env_int("AGENT_RACE_SUMMARY_EVERY_TICKS", 1)),
         db_path=Path(os.getenv("AGENT_RACE_DB_PATH", "data/agent_race.sqlite")),
         workspace_dir=Path(os.getenv("AGENT_RACE_WORKSPACE_DIR", "data/agents")),

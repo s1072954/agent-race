@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from agent_race.config import load_settings
@@ -14,6 +15,11 @@ settings = load_settings()
 store = AgentRaceStore(settings.db_path, settings.workspace_dir)
 scheduler = AgentRaceScheduler(settings, store)
 base = settings.base_path
+
+
+class SchedulerConfigRequest(BaseModel):
+    tick_seconds: int = Field(ge=60, le=86_400)
+    fallback_tick_seconds: int = Field(ge=60, le=86_400)
 
 
 @asynccontextmanager
@@ -53,6 +59,12 @@ async def status() -> JSONResponse:
 async def trigger_tick() -> dict[str, bool]:
     accepted = await scheduler.trigger_once()
     return {"accepted": accepted}
+
+
+@app.post(f"{base}/api/config")
+async def update_config(config: SchedulerConfigRequest) -> dict[str, object]:
+    updated = scheduler.update_config(config.tick_seconds, config.fallback_tick_seconds)
+    return {"ok": True, "scheduler_config": updated}
 
 
 DASHBOARD_HTML = """<!doctype html>
@@ -104,8 +116,20 @@ DASHBOARD_HTML = """<!doctype html>
       font-weight: 700;
       cursor: pointer;
     }
+    input {
+      width: 100%;
+      min-height: 38px;
+      background: #0f1316;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
     main { padding: 20px; display: grid; gap: 18px; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    .control-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; align-items: end; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -120,6 +144,13 @@ DASHBOARD_HTML = """<!doctype html>
     .agent h3 { margin: 0 0 8px; font-size: 16px; overflow-wrap: anywhere; }
     .row { display: flex; justify-content: space-between; gap: 12px; margin: 7px 0; }
     .summary { line-height: 1.55; white-space: pre-wrap; }
+    .limit-alert {
+      margin-top: 14px;
+      border: 1px solid rgba(255, 107, 107, 0.45);
+      background: rgba(255, 107, 107, 0.08);
+      border-radius: 8px;
+      padding: 12px;
+    }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-size: 13px; }
@@ -131,10 +162,12 @@ DASHBOARD_HTML = """<!doctype html>
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 560px) {
       main { padding: 12px; }
       .grid { grid-template-columns: 1fr; }
+      .control-grid { grid-template-columns: 1fr; }
       th, td { font-size: 12px; padding: 7px; }
     }
   </style>
@@ -153,6 +186,33 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="panel"><div class="muted">Cycle</div><div class="metric" id="tick-count">-</div></div>
       <div class="panel"><div class="muted">Interval</div><div class="metric" id="interval">-</div></div>
       <div class="panel"><div class="muted">Live Trading</div><div class="metric" id="trading">-</div></div>
+    </section>
+    <section class="panel">
+      <h2>Scheduler Control</h2>
+      <div class="control-grid">
+        <label>
+          Agent interval seconds
+          <input id="interval-input" type="number" min="60" max="86400" step="60" />
+        </label>
+        <label>
+          Fallback seconds
+          <input id="fallback-input" type="number" min="60" max="86400" step="60" />
+        </label>
+        <button id="save-config">Save Frequency</button>
+        <div>
+          <div class="muted">Fallback State</div>
+          <strong id="fallback-state">-</strong>
+        </div>
+      </div>
+      <div class="muted" id="config-status" style="margin-top:10px;">Taiwan time UTC+8</div>
+      <div class="limit-alert" id="limit-alert" hidden>
+        <strong class="error">Usage or rate limit detected</strong>
+        <div class="row"><span class="muted">Limit time</span><span id="limit-time">-</span></div>
+        <div class="row"><span class="muted">Model</span><code id="limit-model">-</code></div>
+        <div class="row"><span class="muted">Retry-After</span><span id="limit-retry">-</span></div>
+        <div class="row"><span class="muted">Fallback interval</span><span id="limit-fallback">-</span></div>
+        <p class="summary" id="limit-message"></p>
+      </div>
     </section>
     <section class="panel">
       <h2>LLM Monitor Summary</h2>
@@ -174,40 +234,110 @@ DASHBOARD_HTML = """<!doctype html>
   <script>
     const BASE = "__BASE_PATH__";
     const text = (value) => value === null || value === undefined || value === "" ? "-" : String(value);
+    const html = (value) => text(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+    const twFormatter = new Intl.DateTimeFormat("zh-TW", {
+      timeZone: "Asia/Taipei",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
+    function twTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return text(value);
+      return twFormatter.format(date);
+    }
+    function statusClass(value) {
+      return text(value).toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    }
+    function setInputUnlessFocused(id, value) {
+      const input = document.getElementById(id);
+      if (document.activeElement !== input) input.value = value ?? "";
+    }
     async function refresh() {
       const res = await fetch(`${BASE}/api/status`, { cache: "no-store" });
       const data = await res.json();
+      const runtime = data.runtime || {};
+      const config = runtime.scheduler_config || {};
       document.getElementById("agent-count").textContent = text(data.runtime.agent_count);
-      document.getElementById("tick-count").textContent = text(data.runtime.tick_count);
-      document.getElementById("interval").textContent = `${data.runtime.tick_seconds}s`;
-      document.getElementById("trading").textContent = data.runtime.live_trading_enabled ? "ON" : "OFF";
+      document.getElementById("tick-count").textContent = text(runtime.tick_count);
+      document.getElementById("interval").textContent = `${runtime.tick_seconds}s`;
+      document.getElementById("trading").textContent = runtime.live_trading_enabled ? "ON" : "OFF";
+      document.getElementById("fallback-state").textContent = runtime.fallback_active ? "ACTIVE" : "Normal";
+      document.getElementById("fallback-state").className = runtime.fallback_active ? "warn" : "ok";
+      setInputUnlessFocused("interval-input", config.tick_seconds ?? runtime.tick_seconds);
+      setInputUnlessFocused("fallback-input", config.fallback_tick_seconds ?? runtime.fallback_tick_seconds);
       const summary = data.arena_summary || {};
-      document.getElementById("arena-summary").textContent = summary.summary || "No summary yet.";
+      document.getElementById("arena-summary").textContent = summary.summary
+        ? `${summary.summary}\\n\\nUpdated: ${twTime(summary.ts)}`
+        : "No summary yet.";
+
+      const limit = data.last_limit_event || {};
+      const alert = document.getElementById("limit-alert");
+      if (limit.ts) {
+        alert.hidden = false;
+        document.getElementById("limit-time").textContent = twTime(limit.ts);
+        document.getElementById("limit-model").textContent = text(limit.model);
+        document.getElementById("limit-retry").textContent = limit.retry_after_seconds ? `${limit.retry_after_seconds}s` : "-";
+        document.getElementById("limit-fallback").textContent = `${limit.fallback_tick_seconds || runtime.fallback_tick_seconds}s`;
+        document.getElementById("limit-message").textContent = text(limit.message);
+      } else {
+        alert.hidden = true;
+      }
 
       document.getElementById("agents").innerHTML = (data.agents || []).map(agent => {
         const payload = agent.payload_json || {};
         const decision = payload.decision || {};
         return `<article class="agent">
-          <h3>${text(agent.name)}</h3>
-          <div class="row"><span class="muted">Model</span><code>${text(agent.model)}</code></div>
-          <div class="row"><span class="muted">Status</span><strong class="${text(agent.status)}">${text(agent.status)}</strong></div>
+          <h3>${html(agent.name)}</h3>
+          <div class="row"><span class="muted">Model</span><code>${html(agent.model)}</code></div>
+          <div class="row"><span class="muted">Status</span><strong class="${statusClass(agent.status)}">${html(agent.status)}</strong></div>
           <div class="row"><span class="muted">Score</span><strong>${Number(agent.score || 0).toFixed(3)}</strong></div>
-          <div class="row"><span class="muted">Last Tick</span><span>${text(agent.last_tick_at)}</span></div>
-          <p class="summary">${text(agent.last_summary || decision.summary)}</p>
+          <div class="row"><span class="muted">Last Tick</span><span>${twTime(agent.last_tick_at)}</span></div>
+          <p class="summary">${html(agent.last_summary || decision.summary)}</p>
         </article>`;
       }).join("");
 
       document.getElementById("strategies").innerHTML = (data.strategies || []).map(item =>
-        `<tr><td>${text(item.ts)}</td><td><code>${text(item.agent_id)}</code></td><td>${text(item.title)}</td><td>${text(item.expected_edge_bps)}</td><td>${text(item.risk_score)}</td></tr>`
+        `<tr><td>${twTime(item.ts)}</td><td><code>${html(item.agent_id)}</code></td><td>${html(item.title)}</td><td>${html(item.expected_edge_bps)}</td><td>${html(item.risk_score)}</td></tr>`
       ).join("");
 
       document.getElementById("events").innerHTML = (data.events || []).map(item =>
-        `<tr><td>${text(item.ts)}</td><td><code>${text(item.agent_id)}</code></td><td>${text(item.kind)}</td><td>${text(item.message)}</td></tr>`
+        `<tr><td>${twTime(item.ts)}</td><td><code>${html(item.agent_id)}</code></td><td>${html(item.kind)}</td><td>${html(item.message)}</td></tr>`
       ).join("");
     }
     document.getElementById("tick").addEventListener("click", async () => {
       await fetch(`${BASE}/api/tick`, { method: "POST" });
       setTimeout(refresh, 1000);
+    });
+    document.getElementById("save-config").addEventListener("click", async () => {
+      const tickSeconds = Number(document.getElementById("interval-input").value);
+      const fallbackSeconds = Number(document.getElementById("fallback-input").value);
+      const status = document.getElementById("config-status");
+      status.textContent = "Saving...";
+      const res = await fetch(`${BASE}/api/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tick_seconds: tickSeconds, fallback_tick_seconds: fallbackSeconds })
+      });
+      if (!res.ok) {
+        status.textContent = "Save failed. Values must be between 60 and 86400 seconds.";
+        status.className = "error";
+        return;
+      }
+      const data = await res.json();
+      status.className = "ok";
+      status.textContent = `Saved. Interval ${data.scheduler_config.tick_seconds}s, fallback ${data.scheduler_config.fallback_tick_seconds}s.`;
+      refresh();
     });
     refresh();
     setInterval(refresh, 15000);

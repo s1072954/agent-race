@@ -8,8 +8,20 @@ from pathlib import Path
 from typing import Any
 
 
+MIN_TICK_SECONDS = 60
+MAX_TICK_SECONDS = 86_400
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def clamp_seconds(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(MIN_TICK_SECONDS, min(MAX_TICK_SECONDS, parsed))
 
 
 class AgentRaceStore:
@@ -191,6 +203,87 @@ class AgentRaceStore:
                 ),
             )
 
+    def scheduler_config(self, default_tick_seconds: int, default_fallback_tick_seconds: int) -> dict[str, Any]:
+        state = self.get_state("scheduler_config", {})
+        tick_seconds = clamp_seconds(state.get("tick_seconds"), default_tick_seconds)
+        fallback_tick_seconds = clamp_seconds(
+            state.get("fallback_tick_seconds"), default_fallback_tick_seconds
+        )
+        return {
+            "tick_seconds": tick_seconds,
+            "fallback_tick_seconds": fallback_tick_seconds,
+            "fallback_active": bool(state.get("fallback_active", False)),
+            "updated_at": state.get("updated_at"),
+            "updated_by": state.get("updated_by", "default"),
+            "min_tick_seconds": MIN_TICK_SECONDS,
+            "max_tick_seconds": MAX_TICK_SECONDS,
+        }
+
+    def update_scheduler_config(
+        self,
+        *,
+        tick_seconds: int,
+        fallback_tick_seconds: int,
+        updated_by: str,
+        fallback_active: bool = False,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        config = {
+            "tick_seconds": clamp_seconds(tick_seconds, tick_seconds),
+            "fallback_tick_seconds": clamp_seconds(fallback_tick_seconds, fallback_tick_seconds),
+            "fallback_active": fallback_active,
+            "updated_at": now,
+            "updated_by": updated_by,
+            "min_tick_seconds": MIN_TICK_SECONDS,
+            "max_tick_seconds": MAX_TICK_SECONDS,
+        }
+        self.set_state("scheduler_config", config)
+        self.record_event(
+            "scheduler_config_updated",
+            f"Scheduler interval set to {config['tick_seconds']}s; fallback is {config['fallback_tick_seconds']}s",
+            payload=config,
+        )
+        return config
+
+    def record_limit_fallback(
+        self,
+        *,
+        agent_id: str | None,
+        model: str,
+        message: str,
+        retry_after_seconds: float | None,
+        default_tick_seconds: int,
+        default_fallback_tick_seconds: int,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        config = self.scheduler_config(default_tick_seconds, default_fallback_tick_seconds)
+        fallback_seconds = config["fallback_tick_seconds"]
+        config.update(
+            {
+                "tick_seconds": fallback_seconds,
+                "fallback_active": True,
+                "updated_at": now,
+                "updated_by": "limit_fallback",
+            }
+        )
+        event = {
+            "ts": now,
+            "agent_id": agent_id,
+            "model": model,
+            "message": message,
+            "retry_after_seconds": retry_after_seconds,
+            "fallback_tick_seconds": fallback_seconds,
+        }
+        self.set_state("scheduler_config", config)
+        self.set_state("last_limit_event", event)
+        self.record_event(
+            "llm_limit_fallback",
+            f"LLM limit detected; scheduler fallback applied to {fallback_seconds}s",
+            agent_id=agent_id,
+            payload=event,
+        )
+        return event
+
     def set_state(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -256,6 +349,7 @@ class AgentRaceStore:
             "llm_usage": self.llm_usage(limit=25),
             "arena_summary": self.get_state("arena_summary", {}),
             "last_market_snapshot": self.get_state("last_market_snapshot", {}),
+            "last_limit_event": self.get_state("last_limit_event", {}),
         }
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
