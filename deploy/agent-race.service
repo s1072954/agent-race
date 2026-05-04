@@ -1,0 +1,18 @@
+[Unit]
+Description=Agent Race dashboard and scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=User
+Group=User
+WorkingDirectory=/opt/agent-race
+EnvironmentFile=/opt/agent-race/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/agent-race/.venv/bin/python -m uvicorn agent_race.web.app:app --host 127.0.0.1 --port 8010
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
