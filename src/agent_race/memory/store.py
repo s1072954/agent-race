@@ -85,6 +85,21 @@ class AgentRaceStore:
                     payload_json text not null default '{}'
                 );
 
+                create table if not exists paper_signals (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    kind text not null,
+                    symbol text not null,
+                    title text not null,
+                    notional_usdt real not null default 0,
+                    gross_edge_bps real not null default 0,
+                    estimated_cost_bps real not null default 0,
+                    net_edge_bps real not null default 0,
+                    status text not null default 'blocked',
+                    blockers_json text not null default '[]',
+                    payload_json text not null default '{}'
+                );
+
                 create table if not exists llm_calls (
                     id integer primary key autoincrement,
                     ts text not null,
@@ -220,6 +235,42 @@ class AgentRaceStore:
         with self._lock:
             rows = self._conn.execute(
                 "select * from opportunities order by id desc limit ?", (limit,)
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def record_paper_signals(self, signals: list[dict[str, Any]]) -> None:
+        if not signals:
+            return
+        now = utc_now()
+        with self._lock, self._conn:
+            self._conn.executemany(
+                """
+                insert into paper_signals
+                    (ts, kind, symbol, title, notional_usdt, gross_edge_bps, estimated_cost_bps, net_edge_bps, status, blockers_json, payload_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        now,
+                        item.get("kind", "unknown"),
+                        item.get("symbol", "unknown"),
+                        item.get("title", ""),
+                        float(item.get("notional_usdt") or 0),
+                        float(item.get("gross_edge_bps") or 0),
+                        float(item.get("estimated_cost_bps") or 0),
+                        float(item.get("net_edge_bps") or 0),
+                        item.get("status", "blocked"),
+                        json.dumps(item.get("blockers", []), ensure_ascii=False),
+                        json.dumps(item, ensure_ascii=False),
+                    )
+                    for item in signals
+                ],
+            )
+
+    def recent_paper_signals(self, limit: int = 30) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "select * from paper_signals order by id desc limit ?", (limit,)
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -396,6 +447,7 @@ class AgentRaceStore:
             "events": self.recent_events(limit=25),
             "strategies": self.recent_strategies(limit=20),
             "opportunities": self.recent_opportunities(limit=30),
+            "paper_signals": self.recent_paper_signals(limit=30),
             "llm_usage": self.llm_usage(limit=25),
             "arena_summary": self.get_state("arena_summary", {}),
             "last_market_snapshot": self.get_state("last_market_snapshot", {}),
@@ -404,7 +456,7 @@ class AgentRaceStore:
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        for key in ("payload_json", "value_json"):
+        for key in ("payload_json", "value_json", "blockers_json"):
             if key in data:
                 try:
                     data[key] = json.loads(data[key])

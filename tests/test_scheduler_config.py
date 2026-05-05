@@ -42,3 +42,27 @@ def test_records_market_opportunities(tmp_path) -> None:
     assert len(opportunities) == 1
     assert opportunities[0]["symbol"] == "BTCUSDT"
     assert opportunities[0]["payload_json"]["status"] == "actionable_research"
+
+
+def test_records_paper_signals(tmp_path) -> None:
+    store = AgentRaceStore(tmp_path / "race.sqlite", tmp_path / "agents")
+    store.record_paper_signals(
+        [
+            {
+                "kind": "spot_spread",
+                "symbol": "ETHUSDT",
+                "title": "ETH spread",
+                "notional_usdt": 100,
+                "gross_edge_bps": 12,
+                "estimated_cost_bps": 8,
+                "net_edge_bps": 4,
+                "status": "watch",
+                "blockers": ["small edge"],
+            }
+        ]
+    )
+
+    signals = store.recent_paper_signals()
+    assert len(signals) == 1
+    assert signals[0]["symbol"] == "ETHUSDT"
+    assert signals[0]["blockers_json"] == ["small edge"]

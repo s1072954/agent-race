@@ -10,7 +10,7 @@ from agent_race.config import Settings
 from agent_race.llm import AsyncSlidingWindowLimiter, NvidiaChatClient
 from agent_race.memory import AgentRaceStore
 from agent_race.memory.store import utc_now
-from agent_race.tools import fetch_market_snapshot
+from agent_race.tools import fetch_market_snapshot, validate_opportunities
 
 
 class AgentRaceScheduler:
@@ -61,8 +61,11 @@ class AgentRaceScheduler:
             self._tick_count += 1
             self.store.record_event("cycle_started", "Agent race cycle started")
             market_snapshot = await fetch_market_snapshot()
+            paper_signals = await validate_opportunities(market_snapshot.get("opportunities", []))
+            market_snapshot["paper_signals"] = paper_signals
             self.store.set_state("last_market_snapshot", market_snapshot)
             self.store.record_opportunities(market_snapshot.get("opportunities", []))
+            self.store.record_paper_signals(paper_signals)
             semaphore = asyncio.Semaphore(self.settings.max_parallel_llm_calls)
 
             async def run_agent(agent: RootAgent) -> None:
@@ -174,6 +177,7 @@ class AgentRaceScheduler:
                 for item in overview["agents"]
             ],
             "top_market_opportunities": overview.get("opportunities", [])[:12],
+            "top_paper_signals": overview.get("paper_signals", [])[:12],
             "recent_strategy_candidates": [
                 {
                     "ts": item["ts"],
@@ -190,6 +194,7 @@ class AgentRaceScheduler:
                 "notes": market.get("notes", [])[:8],
                 "top_spreads": market.get("spreads", [])[:10],
                 "top_funding_rates": market.get("funding_rates", [])[:10],
+                "paper_signals": market.get("paper_signals", [])[:10],
             },
             "llm_usage_totals": overview["llm_usage"]["totals"],
             "recent_errors": [

@@ -258,6 +258,10 @@ DASHBOARD_HTML = """<!doctype html>
       <table><thead><tr><th>時間</th><th>類型</th><th>標的</th><th>候選機會</th><th>毛邊際 bps</th><th>估計成本 bps</th><th>淨邊際 bps</th><th>狀態</th></tr></thead><tbody id="opportunities"></tbody></table>
     </section>
     <section class="panel">
+      <h2>紙上交易驗證</h2>
+      <table><thead><tr><th>時間</th><th>類型</th><th>標的</th><th>驗證項目</th><th>本金 USDT</th><th>毛邊際 bps</th><th>估計成本 bps</th><th>可成交淨 bps</th><th>狀態</th><th>阻擋原因</th></tr></thead><tbody id="paper-signals"></tbody></table>
+    </section>
+    <section class="panel">
       <h2>候選策略</h2>
       <table><thead><tr><th>時間</th><th>Agent</th><th>標題</th><th>預估優勢 bps</th><th>風險</th></tr></thead><tbody id="strategies"></tbody></table>
     </section>
@@ -333,6 +337,20 @@ DASHBOARD_HTML = """<!doctype html>
         ignore: "忽略",
       };
       return labels[text(value)] || text(value);
+    }
+    function paperSignalStatusLabel(value) {
+      const labels = {
+        paper_trade_ready: "紙上可追蹤",
+        research_only: "僅研究",
+        watch: "觀察",
+        blocked: "阻擋",
+      };
+      return labels[text(value)] || text(value);
+    }
+    function blockersText(value) {
+      if (Array.isArray(value)) return value.join("；");
+      if (!value) return "-";
+      return text(value);
     }
     function setInputUnlessFocused(id, value) {
       const input = document.getElementById(id);
@@ -448,6 +466,10 @@ DASHBOARD_HTML = """<!doctype html>
 
       document.getElementById("opportunities").innerHTML = (data.opportunities || []).map(item =>
         `<tr><td>${twTime(item.ts)}</td><td>${html(opportunityKindLabel(item.kind))}</td><td><code>${html(item.symbol)}</code></td><td>${html(item.title)}</td><td>${Number(item.gross_edge_bps || 0).toFixed(3)}</td><td>${Number(item.estimated_cost_bps || 0).toFixed(3)}</td><td>${Number(item.net_edge_bps || 0).toFixed(3)}</td><td>${html(opportunityStatusLabel(item.status))}</td></tr>`
+      ).join("");
+
+      document.getElementById("paper-signals").innerHTML = (data.paper_signals || []).map(item =>
+        `<tr><td>${twTime(item.ts)}</td><td>${html(opportunityKindLabel(item.kind))}</td><td><code>${html(item.symbol)}</code></td><td>${html(item.title)}</td><td>${Number(item.notional_usdt || 0).toFixed(2)}</td><td>${Number(item.gross_edge_bps || 0).toFixed(3)}</td><td>${Number(item.estimated_cost_bps || 0).toFixed(3)}</td><td>${Number(item.net_edge_bps || 0).toFixed(3)}</td><td>${html(paperSignalStatusLabel(item.status))}</td><td>${html(blockersText(item.blockers_json))}</td></tr>`
       ).join("");
 
       document.getElementById("strategies").innerHTML = (data.strategies || []).map(item =>
