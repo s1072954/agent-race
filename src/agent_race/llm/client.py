@@ -76,7 +76,7 @@ class NvidiaChatClient:
         while True:
             started = time.perf_counter()
             try:
-                async with httpx.AsyncClient(timeout=60) as client:
+                async with httpx.AsyncClient(timeout=self.settings.nvidia_request_timeout_seconds) as client:
                     response = await client.post(url, headers=headers, json=payload)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 if response.status_code == 429:
@@ -118,6 +118,14 @@ class NvidiaChatClient:
                 if attempt >= retries:
                     raise
                 await asyncio.sleep(exc.retry_after or min(30, 2**attempt * 5))
+            except httpx.TimeoutException as exc:
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                message = f"NVIDIA API request timed out after {self.settings.nvidia_request_timeout_seconds}s"
+                if self.store:
+                    self.store.record_llm_call(agent_id, model, "error", latency_ms, {}, message)
+                if attempt >= retries:
+                    raise LLMError(message) from exc
+                await asyncio.sleep(min(20, 2**attempt * 3))
             except (httpx.HTTPError, LLMError) as exc:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 if self.store:

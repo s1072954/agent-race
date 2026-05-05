@@ -4,7 +4,9 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from agent_race.agents.protocol import (
     RootAgentDecision,
@@ -13,8 +15,11 @@ from agent_race.agents.protocol import (
     parse_json_model,
 )
 from agent_race.config import Settings
-from agent_race.llm.client import LLMError, NvidiaChatClient
+from agent_race.llm.client import NvidiaChatClient
 from agent_race.memory.store import AgentRaceStore, utc_now
+
+
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass(frozen=True)
@@ -48,11 +53,12 @@ class RootAgent:
         root_prompt = _read_prompt(self.settings.prompt_dir / "root_agent.md")
         recent_events = self.store.recent_events(self.spec.id, limit=8)
         memory_note = self._read_memory_note()
+        agent_market_snapshot = _compact_market_snapshot(market_snapshot)
         user_prompt = json.dumps(
             {
                 "agent": self.spec.__dict__,
                 "utc_now": utc_now(),
-                "market_snapshot": market_snapshot,
+                "market_snapshot": agent_market_snapshot,
                 "recent_events": recent_events,
                 "memory_note": memory_note[-4000:],
                 "required_json_schema": RootAgentDecision.model_json_schema(),
@@ -71,7 +77,12 @@ class RootAgent:
                 max_tokens=1200,
                 temperature=0.25,
             )
-            decision = parse_json_model(result.content, RootAgentDecision)
+            decision = await self._parse_or_repair(
+                content=result.content,
+                model_type=RootAgentDecision,
+                context="root_agent",
+                max_tokens=1200,
+            )
             status = "ok"
         except Exception as exc:  # noqa: BLE001
             decision = fallback_decision(str(exc))
@@ -123,7 +134,7 @@ class RootAgent:
                 {
                     "agent": self.spec.__dict__,
                     "task": task.model_dump(),
-                    "market_snapshot": market_snapshot,
+                    "market_snapshot": _compact_market_snapshot(market_snapshot),
                     "required_json_schema": SubAgentResult.model_json_schema(),
                 },
                 ensure_ascii=False,
@@ -139,7 +150,12 @@ class RootAgent:
                     max_tokens=700,
                     temperature=0.2,
                 )
-                parsed = parse_json_model(result.content, SubAgentResult)
+                parsed = await self._parse_or_repair(
+                    content=result.content,
+                    model_type=SubAgentResult,
+                    context="subagent",
+                    max_tokens=700,
+                )
             except Exception as exc:  # noqa: BLE001
                 parsed = SubAgentResult(
                     role=task.role,
@@ -157,6 +173,70 @@ class RootAgent:
                 payload=parsed.model_dump(),
             )
         return results
+
+    async def _parse_or_repair(
+        self,
+        *,
+        content: str,
+        model_type: type[T],
+        context: str,
+        max_tokens: int,
+    ) -> T:
+        try:
+            return parse_json_model(content, model_type)
+        except Exception as first_exc:  # noqa: BLE001
+            self.store.record_event(
+                f"{context}_format_repair_started",
+                str(first_exc),
+                agent_id=self.spec.id,
+                payload={"response_preview": content[:1000]},
+            )
+
+        repair_prompt = json.dumps(
+            {
+                "instruction": (
+                    "Repair the invalid model output into exactly one valid JSON object. "
+                    "Preserve the intent when possible. If a field is missing, use an empty list, "
+                    "empty string, or conservative numeric value that matches the schema. "
+                    "Return JSON only."
+                ),
+                "required_json_schema": model_type.model_json_schema(),
+                "invalid_output": content[:6000],
+            },
+            ensure_ascii=False,
+        )
+        try:
+            repaired = await self.llm.chat(
+                agent_id=self.spec.id,
+                model=self.spec.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict JSON repair tool. Return exactly one valid JSON object. "
+                            "No Markdown, no code fence, no prose."
+                        ),
+                    },
+                    {"role": "user", "content": repair_prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=0,
+                retries=0,
+            )
+            parsed = parse_json_model(repaired.content, model_type)
+            self.store.record_event(
+                f"{context}_format_repair_completed",
+                "Invalid JSON output was repaired successfully",
+                agent_id=self.spec.id,
+            )
+            return parsed
+        except Exception as repair_exc:  # noqa: BLE001
+            self.store.record_event(
+                f"{context}_format_repair_failed",
+                str(repair_exc),
+                agent_id=self.spec.id,
+            )
+            raise ValueError(f"JSON parse failed and repair failed: {repair_exc}") from repair_exc
 
     def _score_delta(
         self,
@@ -211,3 +291,52 @@ def _read_prompt(path: Path, default: str = "") -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return default
+
+
+def _compact_market_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ts": snapshot.get("ts"),
+        "data_quality": snapshot.get("data_quality", [])[:6],
+        "notes": snapshot.get("notes", [])[:8],
+        "opportunities": [_compact_item(item) for item in snapshot.get("opportunities", [])[:12]],
+        "paper_signals": [_compact_item(item) for item in snapshot.get("paper_signals", [])[:12]],
+        "spreads": [_compact_item(item) for item in snapshot.get("spreads", [])[:12]],
+        "funding_rates": [_compact_item(item) for item in snapshot.get("funding_rates", [])[:12]],
+    }
+
+
+def _compact_item(item: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "kind",
+        "symbol",
+        "title",
+        "base",
+        "exchange",
+        "left_exchange",
+        "right_exchange",
+        "lower_exchange",
+        "higher_exchange",
+        "lower_price",
+        "higher_price",
+        "spread_bps",
+        "quote_mismatch",
+        "min_quote_volume_usd",
+        "gross_edge_bps",
+        "estimated_cost_bps",
+        "net_edge_bps",
+        "confidence",
+        "status",
+        "next_validation",
+        "notional_usdt",
+        "validation",
+        "blockers",
+        "last_funding_rate",
+        "funding_bps",
+        "annualized_percent",
+        "next_funding_time",
+    }
+    compact = {key: value for key, value in item.items() if key in allowed}
+    evidence = item.get("evidence")
+    if isinstance(evidence, dict):
+        compact["evidence"] = {key: value for key, value in evidence.items() if key in allowed}
+    return compact

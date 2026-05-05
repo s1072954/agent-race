@@ -54,6 +54,7 @@ class Settings:
     nvidia_summary_model: str
     nvidia_global_rpm: int
     nvidia_model_rpm: int
+    nvidia_request_timeout_seconds: int
     max_parallel_llm_calls: int
     max_subagent_tasks: int
     base_path: str
@@ -91,6 +92,7 @@ def load_settings(env_path: str | Path = DEFAULT_ENV_PATH) -> Settings:
         nvidia_summary_model=os.getenv("NVIDIA_SUMMARY_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
         nvidia_global_rpm=env_int("NVIDIA_GLOBAL_RPM", 8),
         nvidia_model_rpm=env_int("NVIDIA_MODEL_RPM", 2),
+        nvidia_request_timeout_seconds=max(30, env_int("NVIDIA_REQUEST_TIMEOUT_SECONDS", 90)),
         max_parallel_llm_calls=max(1, env_int("AGENT_RACE_MAX_PARALLEL_LLM_CALLS", 1)),
         max_subagent_tasks=max(0, env_int("AGENT_RACE_MAX_SUBAGENT_TASKS", 1)),
         base_path=base_path.rstrip("/"),
