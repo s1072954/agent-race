@@ -249,6 +249,20 @@ DASHBOARD_HTML = """<!doctype html>
       <h2>LLM 監控摘要</h2>
       <div class="summary markdown" id="arena-summary">載入中...</div>
     </section>
+    <section class="panel">
+      <h2>流程瓶頸</h2>
+      <div class="grid">
+        <div class="panel"><div class="muted">紙上可追蹤</div><div class="metric" id="ready-count">-</div></div>
+        <div class="panel"><div class="muted">僅研究</div><div class="metric" id="research-count">-</div></div>
+        <div class="panel"><div class="muted">阻擋</div><div class="metric" id="blocked-count">-</div></div>
+        <div class="panel"><div class="muted">借幣資料源</div><div class="metric" id="borrow-source">-</div></div>
+      </div>
+      <table style="margin-top:14px;"><thead><tr><th>主要阻擋原因</th><th>次數</th></tr></thead><tbody id="blockers"></tbody></table>
+    </section>
+    <section class="panel">
+      <h2>模型可靠度</h2>
+      <table><thead><tr><th>模型</th><th>呼叫</th><th>成功率</th><th>Timeout</th><th>格式修復</th><th>格式失敗</th><th>平均延遲</th><th>平均 Prompt</th></tr></thead><tbody id="llm-diagnostics"></tbody></table>
+    </section>
     <section>
       <h2>Agent 狀態</h2>
       <div class="agents" id="agents"></div>
@@ -450,6 +464,23 @@ DASHBOARD_HTML = """<!doctype html>
       } else {
         alert.hidden = true;
       }
+
+      const paperDiagnostics = data.paper_diagnostics || {};
+      const statusCounts = Object.fromEntries((paperDiagnostics.statuses || []).map(item => [item.status, item.count]));
+      document.getElementById("ready-count").textContent = text(statusCounts.paper_trade_ready || 0);
+      document.getElementById("research-count").textContent = text(statusCounts.research_only || 0);
+      document.getElementById("blocked-count").textContent = text(statusCounts.blocked || 0);
+      const borrowSnapshot = (data.last_market_snapshot || {}).borrow_snapshot || {};
+      document.getElementById("borrow-source").textContent = borrowSnapshot.configured ? "已連線" : "未設定";
+      document.getElementById("borrow-source").className = borrowSnapshot.configured ? "metric ok" : "metric warn";
+      document.getElementById("blockers").innerHTML = (paperDiagnostics.top_blockers || []).map(item =>
+        `<tr><td>${html(item.blocker)}</td><td>${html(item.count)}</td></tr>`
+      ).join("");
+
+      document.getElementById("llm-diagnostics").innerHTML = (data.llm_diagnostics || []).map(item => {
+        const repairText = `${item.format_repairs_completed || 0}/${item.format_repairs_started || 0}`;
+        return `<tr><td><code>${html(item.model || item.agent_id)}</code></td><td>${html(item.calls)}</td><td>${((item.ok_rate || 0) * 100).toFixed(1)}%</td><td>${html(item.timeouts || 0)}</td><td>${html(repairText)}</td><td>${html(item.format_repairs_failed || 0)}</td><td>${Number(item.avg_latency_ms || 0).toFixed(0)} ms</td><td>${Number(item.avg_prompt_tokens || 0).toFixed(0)}</td></tr>`;
+      }).join("");
 
       document.getElementById("agents").innerHTML = (data.agents || []).map(agent => {
         const payload = agent.payload_json || {};

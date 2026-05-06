@@ -20,6 +20,7 @@ async def validate_opportunities(
     *,
     notional_usdt: float = PAPER_NOTIONAL_USDT,
     max_items: int = MAX_VALIDATIONS_PER_CYCLE,
+    borrow_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     selected = opportunities[:max_items]
     if not selected:
@@ -32,7 +33,7 @@ async def validate_opportunities(
                     if item.get("kind") == "spot_spread":
                         return await _validate_spot_spread(client, item, notional_usdt)
                     if item.get("kind") == "funding_rate":
-                        return await _validate_funding_rate(client, item, notional_usdt)
+                        return await _validate_funding_rate(client, item, notional_usdt, borrow_snapshot)
                     return _blocked_signal(item, notional_usdt, ["unsupported opportunity kind"])
                 except Exception as exc:  # noqa: BLE001
                     return _blocked_signal(item, notional_usdt, [f"validation failed: {type(exc).__name__}: {exc}"])
@@ -101,6 +102,7 @@ async def _validate_funding_rate(
     client: httpx.AsyncClient,
     opportunity: dict[str, Any],
     notional_usdt: float,
+    borrow_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
     evidence = opportunity.get("evidence") or {}
     symbol = opportunity.get("symbol") or f"{evidence.get('base', '')}USDT"
@@ -123,6 +125,7 @@ async def _validate_funding_rate(
             else 0.0
         )
         borrow_required = False
+        borrow_cost_bps = 0.0
         validation = {
             "structure": "short perp / long spot",
             "spot_avg_price": spot_buy["avg_price"],
@@ -144,24 +147,41 @@ async def _validate_funding_rate(
             else 0.0
         )
         borrow_required = True
+        borrow_cost_bps = 0.0
         validation = {
             "structure": "long perp / short spot",
             "spot_avg_price": spot_sell["avg_price"],
             "perp_avg_price": perp_buy["avg_price"],
             "base_qty": base_qty,
         }
-        blockers.append("spot borrow availability and borrow rate are unknown")
+        borrow_info = _borrow_info(symbol[:-4], borrow_snapshot)
+        validation["borrow"] = borrow_info
+        if not borrow_info["configured"]:
+            blockers.append("Binance margin read-only API is not configured for borrow validation")
+        elif borrow_info["status"] != "ok":
+            blockers.append(f"Binance margin borrow data is not usable: {borrow_info['status']}")
+        else:
+            borrow_cost_bps = float(borrow_info.get("borrow_cost_bps_per_funding") or 0)
+            required_base = base_qty
+            available_inventory = borrow_info.get("available_inventory_amount")
+            max_borrowable = borrow_info.get("max_borrowable_amount")
+            if available_inventory is not None and available_inventory < required_base:
+                blockers.append("Binance margin inventory is below paper notional requirement")
+            if max_borrowable is not None and max_borrowable < required_base:
+                blockers.append("Binance account max borrowable is below paper notional requirement")
         if not spot_sell["filled"]:
             blockers.append("insufficient Binance spot bid depth")
         if not perp_buy["filled"]:
             blockers.append("insufficient Binance perp ask depth")
 
-    estimated_cost_bps = SPOT_TAKER_FEE_BPS["binance"] + BINANCE_PERP_TAKER_FEE_BPS
+    estimated_cost_bps = SPOT_TAKER_FEE_BPS["binance"] + BINANCE_PERP_TAKER_FEE_BPS + borrow_cost_bps
     gross_edge_bps = abs(funding_bps) + execution_basis_bps
     net_edge_bps = gross_edge_bps - estimated_cost_bps
     if net_edge_bps <= 0:
         blockers.append("net funding edge is not positive after entry basis and taker fees")
-    status = "research_only" if borrow_required and net_edge_bps > 0 else _status_from_blockers_and_edge(blockers, net_edge_bps)
+    status = _status_from_blockers_and_edge(blockers, net_edge_bps)
+    if borrow_required and blockers and net_edge_bps > 0:
+        status = "research_only"
     return {
         "kind": "funding_rate",
         "symbol": symbol,
@@ -177,6 +197,7 @@ async def _validate_funding_rate(
             "funding_bps": funding_bps,
             "execution_basis_bps": round(execution_basis_bps, 4),
             "borrow_required": borrow_required,
+            "borrow_cost_bps_per_funding": round(borrow_cost_bps, 4),
         },
         "source_opportunity": opportunity,
     }
@@ -263,6 +284,27 @@ def best_price(levels: list[list[float]]) -> float:
     if not levels:
         raise ValueError("empty order book")
     return levels[0][0]
+
+
+def _borrow_info(base: str, borrow_snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not borrow_snapshot:
+        return {"asset": base, "configured": False, "status": "missing_snapshot"}
+    asset = (borrow_snapshot.get("assets") or {}).get(base) or {}
+    if not borrow_snapshot.get("configured"):
+        return {"asset": base, "configured": False, "status": "not_configured"}
+    if not asset:
+        return {"asset": base, "configured": True, "status": "asset_not_returned"}
+    return {
+        "asset": base,
+        "configured": True,
+        "status": asset.get("status", "unknown"),
+        "available_inventory_amount": asset.get("available_inventory_amount"),
+        "daily_interest_bps": asset.get("daily_interest_bps"),
+        "borrow_cost_bps_per_funding": asset.get("borrow_cost_bps_per_funding"),
+        "max_borrowable_amount": asset.get("max_borrowable_amount"),
+        "borrow_limit_amount": asset.get("borrow_limit_amount"),
+        "notes": asset.get("notes", []),
+    }
 
 
 def _status_from_blockers_and_edge(blockers: list[str], net_edge_bps: float) -> str:

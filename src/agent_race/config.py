@@ -55,6 +55,10 @@ class Settings:
     nvidia_global_rpm: int
     nvidia_model_rpm: int
     nvidia_request_timeout_seconds: int
+    binance_api_key: str | None
+    binance_api_secret: str | None
+    binance_margin_read_enabled: bool
+    binance_query_max_borrowable: bool
     max_parallel_llm_calls: int
     max_subagent_tasks: int
     base_path: str
@@ -71,6 +75,10 @@ class Settings:
     @property
     def can_call_llm(self) -> bool:
         return bool(self.nvidia_api_key)
+
+    @property
+    def can_call_binance_margin_read(self) -> bool:
+        return bool(self.binance_margin_read_enabled and self.binance_api_key and self.binance_api_secret)
 
 
 def load_settings(env_path: str | Path = DEFAULT_ENV_PATH) -> Settings:
@@ -93,6 +101,10 @@ def load_settings(env_path: str | Path = DEFAULT_ENV_PATH) -> Settings:
         nvidia_global_rpm=env_int("NVIDIA_GLOBAL_RPM", 8),
         nvidia_model_rpm=env_int("NVIDIA_MODEL_RPM", 2),
         nvidia_request_timeout_seconds=max(30, env_int("NVIDIA_REQUEST_TIMEOUT_SECONDS", 90)),
+        binance_api_key=os.getenv("BINANCE_API_KEY") or None,
+        binance_api_secret=os.getenv("BINANCE_API_SECRET") or None,
+        binance_margin_read_enabled=env_bool("BINANCE_MARGIN_READ_ENABLED", False),
+        binance_query_max_borrowable=env_bool("BINANCE_QUERY_MAX_BORROWABLE", False),
         max_parallel_llm_calls=max(1, env_int("AGENT_RACE_MAX_PARALLEL_LLM_CALLS", 1)),
         max_subagent_tasks=max(0, env_int("AGENT_RACE_MAX_SUBAGENT_TASKS", 1)),
         base_path=base_path.rstrip("/"),

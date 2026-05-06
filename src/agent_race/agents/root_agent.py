@@ -244,19 +244,34 @@ class RootAgent:
         subagent_results: list[SubAgentResult],
         market_snapshot: dict[str, Any],
     ) -> float:
-        opportunities = market_snapshot.get("opportunities", [])
-        best_net_edge = max((float(item.get("net_edge_bps") or 0) for item in opportunities), default=0.0)
-        has_actionable_evidence = any(item.get("status") == "actionable_research" for item in opportunities)
+        paper_signals = market_snapshot.get("paper_signals", [])
+        ready_edges = [
+            float(item.get("net_edge_bps") or 0)
+            for item in paper_signals
+            if item.get("status") == "paper_trade_ready"
+        ]
+        watch_edges = [
+            float(item.get("net_edge_bps") or 0)
+            for item in paper_signals
+            if item.get("status") == "watch"
+        ]
+        has_executable_evidence = bool(ready_edges)
+        has_near_executable_evidence = bool(watch_edges)
         if not decision.strategy_candidates:
-            no_trade_bonus = 0.035 if not has_actionable_evidence else 0.01
+            no_trade_bonus = 0.035 if not has_executable_evidence else 0.005
             return round(no_trade_bonus * decision.confidence, 4)
         avg_edge = sum(item.expected_edge_bps for item in decision.strategy_candidates) / len(decision.strategy_candidates)
         avg_risk = sum(item.risk_score for item in decision.strategy_candidates) / len(decision.strategy_candidates)
         subagent_bonus = sum(item.confidence for item in subagent_results) * 0.03
-        evidence_bonus = max(0.0, best_net_edge) * 0.015
-        score = avg_edge / 120 - avg_risk * 0.03 + decision.confidence * 0.08 + subagent_bonus + evidence_bonus
-        if not has_actionable_evidence:
-            score *= 0.45
+        if has_executable_evidence:
+            evidence_bonus = max(ready_edges) * 0.04
+        elif has_near_executable_evidence:
+            evidence_bonus = max(watch_edges) * 0.01
+        else:
+            evidence_bonus = 0.0
+        score = avg_edge / 150 - avg_risk * 0.04 + decision.confidence * 0.06 + subagent_bonus + evidence_bonus
+        if not has_executable_evidence:
+            score *= 0.25 if has_near_executable_evidence else 0.15
         return round(max(0.0, score), 4)
 
     def _read_memory_note(self) -> str:
@@ -302,6 +317,7 @@ def _compact_market_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "paper_signals": [_compact_item(item) for item in snapshot.get("paper_signals", [])[:12]],
         "spreads": [_compact_item(item) for item in snapshot.get("spreads", [])[:12]],
         "funding_rates": [_compact_item(item) for item in snapshot.get("funding_rates", [])[:12]],
+        "borrow_snapshot": _compact_borrow_snapshot(snapshot.get("borrow_snapshot", {})),
     }
 
 
@@ -340,3 +356,28 @@ def _compact_item(item: dict[str, Any]) -> dict[str, Any]:
     if isinstance(evidence, dict):
         compact["evidence"] = {key: value for key, value in evidence.items() if key in allowed}
     return compact
+
+
+def _compact_borrow_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    if not snapshot:
+        return {}
+    assets = snapshot.get("assets") or {}
+    return {
+        "ts": snapshot.get("ts"),
+        "provider": snapshot.get("provider"),
+        "configured": snapshot.get("configured", False),
+        "assets_requested": snapshot.get("assets_requested", []),
+        "notes": snapshot.get("notes", [])[:4],
+        "errors": snapshot.get("errors", [])[:4],
+        "assets": {
+            asset: {
+                "status": item.get("status"),
+                "available_inventory_amount": item.get("available_inventory_amount"),
+                "daily_interest_bps": item.get("daily_interest_bps"),
+                "borrow_cost_bps_per_funding": item.get("borrow_cost_bps_per_funding"),
+                "max_borrowable_amount": item.get("max_borrowable_amount"),
+            }
+            for asset, item in list(assets.items())[:12]
+            if isinstance(item, dict)
+        },
+    }

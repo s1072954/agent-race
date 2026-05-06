@@ -10,7 +10,7 @@ from agent_race.config import Settings
 from agent_race.llm import AsyncSlidingWindowLimiter, NvidiaChatClient
 from agent_race.memory import AgentRaceStore
 from agent_race.memory.store import utc_now
-from agent_race.tools import fetch_market_snapshot, validate_opportunities
+from agent_race.tools import fetch_borrow_snapshot, fetch_market_snapshot, validate_opportunities
 
 
 class AgentRaceScheduler:
@@ -61,7 +61,12 @@ class AgentRaceScheduler:
             self._tick_count += 1
             self.store.record_event("cycle_started", "Agent race cycle started")
             market_snapshot = await fetch_market_snapshot()
-            paper_signals = await validate_opportunities(market_snapshot.get("opportunities", []))
+            borrow_snapshot = await fetch_borrow_snapshot(self.settings, market_snapshot.get("opportunities", []))
+            paper_signals = await validate_opportunities(
+                market_snapshot.get("opportunities", []),
+                borrow_snapshot=borrow_snapshot,
+            )
+            market_snapshot["borrow_snapshot"] = borrow_snapshot
             market_snapshot["paper_signals"] = paper_signals
             self.store.set_state("last_market_snapshot", market_snapshot)
             self.store.record_opportunities(market_snapshot.get("opportunities", []))
@@ -195,8 +200,11 @@ class AgentRaceScheduler:
                 "top_spreads": market.get("spreads", [])[:10],
                 "top_funding_rates": market.get("funding_rates", [])[:10],
                 "paper_signals": market.get("paper_signals", [])[:10],
+                "borrow_snapshot": market.get("borrow_snapshot", {}),
             },
             "llm_usage_totals": overview["llm_usage"]["totals"],
+            "paper_diagnostics": overview.get("paper_diagnostics", {}),
+            "llm_diagnostics": overview.get("llm_diagnostics", [])[:8],
             "recent_errors": [
                 {
                     "ts": item["ts"],
@@ -223,6 +231,7 @@ class AgentRaceScheduler:
             "models": [agent.spec.model for agent in self.agents],
             "live_trading_enabled": self.settings.live_trading_enabled,
             "shell_tools_enabled": self.settings.shell_tools_enabled,
+            "binance_margin_read_enabled": self.settings.can_call_binance_margin_read,
         }
 
     def _scheduler_config(self) -> dict[str, Any]:

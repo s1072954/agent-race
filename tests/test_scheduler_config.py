@@ -66,3 +66,38 @@ def test_records_paper_signals(tmp_path) -> None:
     assert len(signals) == 1
     assert signals[0]["symbol"] == "ETHUSDT"
     assert signals[0]["blockers_json"] == ["small edge"]
+
+
+def test_paper_diagnostics_counts_blockers(tmp_path) -> None:
+    store = AgentRaceStore(tmp_path / "race.sqlite", tmp_path / "agents")
+    store.record_paper_signals(
+        [
+            {
+                "kind": "funding_rate",
+                "symbol": "ABCUSDT",
+                "title": "ABC funding",
+                "notional_usdt": 100,
+                "gross_edge_bps": 20,
+                "estimated_cost_bps": 15,
+                "net_edge_bps": 5,
+                "status": "research_only",
+                "blockers": ["borrow missing"],
+            },
+            {
+                "kind": "spot_spread",
+                "symbol": "XYZUSDT",
+                "title": "XYZ spread",
+                "notional_usdt": 100,
+                "gross_edge_bps": 1,
+                "estimated_cost_bps": 20,
+                "net_edge_bps": -19,
+                "status": "blocked",
+                "blockers": ["borrow missing", "fees too high"],
+            },
+        ]
+    )
+
+    diagnostics = store.paper_diagnostics()
+
+    assert {"status": "blocked", "count": 1} in diagnostics["statuses"]
+    assert diagnostics["top_blockers"][0] == {"blocker": "borrow missing", "count": 2}

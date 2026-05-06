@@ -441,6 +441,99 @@ class AgentRaceStore:
             "recent": [self._row_to_dict(row) for row in recent],
         }
 
+    def llm_diagnostics(self, limit: int = 250) -> list[dict[str, Any]]:
+        with self._lock:
+            call_rows = self._conn.execute(
+                "select * from llm_calls order by id desc limit ?", (limit,)
+            ).fetchall()
+            event_rows = self._conn.execute(
+                """
+                select agent_id, kind from events
+                where kind like '%format_repair%'
+                order by id desc limit ?
+                """,
+                (limit,),
+            ).fetchall()
+        rows = [self._row_to_dict(row) for row in call_rows]
+        events = [self._row_to_dict(row) for row in event_rows]
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = row.get("agent_id") or row.get("model") or "unknown"
+            item = grouped.setdefault(
+                key,
+                {
+                    "agent_id": row.get("agent_id"),
+                    "model": row.get("model"),
+                    "calls": 0,
+                    "ok": 0,
+                    "errors": 0,
+                    "rate_limited": 0,
+                    "timeouts": 0,
+                    "total_latency_ms": 0,
+                    "prompt_token_samples": 0,
+                    "total_prompt_tokens": 0,
+                    "format_repairs_started": 0,
+                    "format_repairs_completed": 0,
+                    "format_repairs_failed": 0,
+                },
+            )
+            item["calls"] += 1
+            status = row.get("status")
+            if status == "ok":
+                item["ok"] += 1
+            elif status == "rate_limited":
+                item["rate_limited"] += 1
+            else:
+                item["errors"] += 1
+            if "timed out" in str(row.get("error") or "").lower():
+                item["timeouts"] += 1
+            item["total_latency_ms"] += int(row.get("latency_ms") or 0)
+            if row.get("prompt_tokens") is not None:
+                item["prompt_token_samples"] += 1
+                item["total_prompt_tokens"] += int(row.get("prompt_tokens") or 0)
+
+        for event in events:
+            key = event.get("agent_id")
+            if not key or key not in grouped:
+                continue
+            kind = event.get("kind", "")
+            if kind.endswith("_format_repair_started"):
+                grouped[key]["format_repairs_started"] += 1
+            elif kind.endswith("_format_repair_completed"):
+                grouped[key]["format_repairs_completed"] += 1
+            elif kind.endswith("_format_repair_failed"):
+                grouped[key]["format_repairs_failed"] += 1
+
+        diagnostics = []
+        for item in grouped.values():
+            calls = max(1, item["calls"])
+            samples = max(1, item["prompt_token_samples"])
+            diagnostics.append(
+                {
+                    **item,
+                    "ok_rate": round(item["ok"] / calls, 4),
+                    "avg_latency_ms": round(item["total_latency_ms"] / calls),
+                    "avg_prompt_tokens": round(item["total_prompt_tokens"] / samples),
+                }
+            )
+        return sorted(diagnostics, key=lambda item: (item["ok_rate"], -item["calls"]))
+
+    def paper_diagnostics(self, limit: int = 120) -> dict[str, Any]:
+        signals = self.recent_paper_signals(limit=limit)
+        statuses: dict[str, int] = {}
+        blockers: dict[str, int] = {}
+        for signal in signals:
+            statuses[signal.get("status", "unknown")] = statuses.get(signal.get("status", "unknown"), 0) + 1
+            for blocker in signal.get("blockers_json") or []:
+                blockers[blocker] = blockers.get(blocker, 0) + 1
+        return {
+            "statuses": [{"status": key, "count": value} for key, value in sorted(statuses.items())],
+            "top_blockers": [
+                {"blocker": key, "count": value}
+                for key, value in sorted(blockers.items(), key=lambda item: item[1], reverse=True)[:10]
+            ],
+        }
+
     def overview(self) -> dict[str, Any]:
         return {
             "agents": self.list_agents(),
@@ -449,6 +542,8 @@ class AgentRaceStore:
             "opportunities": self.recent_opportunities(limit=30),
             "paper_signals": self.recent_paper_signals(limit=30),
             "llm_usage": self.llm_usage(limit=25),
+            "llm_diagnostics": self.llm_diagnostics(limit=250),
+            "paper_diagnostics": self.paper_diagnostics(limit=120),
             "arena_summary": self.get_state("arena_summary", {}),
             "last_market_snapshot": self.get_state("last_market_snapshot", {}),
             "last_limit_event": self.get_state("last_limit_event", {}),
