@@ -76,6 +76,9 @@ def _candidate_json_objects(text: str) -> list[str]:
     candidates: list[str] = []
     for source in _json_sources(text):
         candidates.extend(_balanced_json_objects(source))
+        truncated = _complete_truncated_json_object(source)
+        if truncated:
+            candidates.append(truncated)
     return candidates
 
 
@@ -123,6 +126,43 @@ def _balanced_json_objects(text: str) -> list[str]:
                 start = None
 
     return results
+
+
+def _complete_truncated_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    candidate = text[start:].strip()
+    for char in candidate:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in ("}", "]"):
+            if stack and stack[-1] == char:
+                stack.pop()
+
+    if not stack:
+        return None
+    if escape:
+        candidate = candidate[:-1]
+    if in_string:
+        candidate += '"'
+    candidate = _remove_trailing_commas(candidate)
+    return candidate + "".join(reversed(stack))
 
 
 def _loads_jsonish(text: str) -> Any | None:

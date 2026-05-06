@@ -26,6 +26,17 @@ def test_parse_json_model_repairs_trailing_commas() -> None:
     assert parsed.observations == ["fees too high"]
 
 
+def test_parse_json_model_closes_truncated_object() -> None:
+    parsed = parse_json_model(
+        '{"role":"researcher","summary":"borrow data missing","findings":["need API key',
+        SubAgentResult,
+    )
+
+    assert parsed.role == "researcher"
+    assert parsed.summary == "borrow data missing"
+    assert parsed.findings == ["need API key"]
+
+
 def test_parse_json_model_rejects_plain_text_without_json() -> None:
     with pytest.raises(ValueError, match="No JSON object"):
         parse_json_model("I cannot provide JSON for this answer.", SubAgentResult)
