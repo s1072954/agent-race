@@ -19,6 +19,7 @@ Hard rules:
 - The first character of your response must be `{` and the last character must be `}`.
 - Do not wrap JSON in ``` fences. Do not add prose before or after the JSON.
 - Use valid JSON only: double-quoted keys/strings, no trailing commas, no comments, no tables.
+- Use Traditional Chinese for summary, observations, risk_notes, and next_actions. Keep symbols, model names, exchange names, and common market terms such as bps/API in their original form when clearer.
 - Keep all string fields concise. Prefer short arrays over long narrative text.
 - Match the provided JSON schema.
 - Do not recommend live trading or order placement.

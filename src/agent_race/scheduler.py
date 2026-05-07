@@ -128,14 +128,20 @@ class AgentRaceScheduler:
                 "arena_summary",
                 {
                     "ts": utc_now(),
-                    "summary": "NVIDIA_API_KEY is not configured; dashboard is showing deterministic scheduler state.",
+                    "summary": "NVIDIA_API_KEY 未設定；dashboard 目前只顯示排程與市場資料狀態。",
                     "model": None,
                 },
             )
             return
         prompt = json.dumps(
             {
-                "instruction": "Summarize the current LLM agent race in concise Traditional Chinese. Focus on each agent status, best strategy candidates, risk, and next operational concern.",
+                "instruction": (
+                    "請用繁體中文摘要目前的加密貨幣套利 LLM 競賽狀態。"
+                    "所有標題、狀態、風險、下一步都必須使用繁體中文；"
+                    "交易對、模型名稱、交易所名稱、bps、API 等專有名詞可以保留英文。"
+                    "不要輸出英文段落。請保持精簡、具體、風險意識清楚。"
+                    "內容需涵蓋：Agent 狀態、主要策略候選、是否可執行、主要阻礙、下一個操作重點。"
+                ),
                 "overview": overview,
             },
             ensure_ascii=False,
@@ -147,7 +153,11 @@ class AgentRaceScheduler:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are the monitor for a crypto arbitrage LLM agent arena. Be concise, factual, and risk-aware.",
+                        "content": (
+                            "你是加密貨幣套利 LLM 競賽場的監控摘要員。"
+                            "你必須只用繁體中文輸出；不得使用英文句子。"
+                            "可保留交易對、模型名、交易所名與技術縮寫。"
+                        ),
                     },
                     {"role": "user", "content": prompt},
                 ],
