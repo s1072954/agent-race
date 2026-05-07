@@ -51,7 +51,10 @@ async def dashboard() -> str:
 @app.get(f"{base}/api/status")
 async def status() -> JSONResponse:
     payload = store.overview()
-    payload["runtime"] = scheduler.runtime_status()
+    runtime = scheduler.runtime_status()
+    active_models = set(runtime["models"])
+    payload["agents"] = [agent for agent in payload.get("agents", []) if agent.get("model") in active_models]
+    payload["runtime"] = runtime
     return JSONResponse(payload)
 
 

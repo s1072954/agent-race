@@ -72,10 +72,11 @@ class AgentRaceScheduler:
             self.store.record_opportunities(market_snapshot.get("opportunities", []))
             self.store.record_paper_signals(paper_signals)
             semaphore = asyncio.Semaphore(self.settings.max_parallel_llm_calls)
+            allow_subagents = self._tick_count % self.settings.subagent_every_ticks == 0
 
             async def run_agent(agent: RootAgent) -> None:
                 async with semaphore:
-                    await agent.run_tick(market_snapshot)
+                    await agent.run_tick(market_snapshot, allow_subagents=allow_subagents)
 
             await asyncio.gather(*(run_agent(agent) for agent in self.agents))
             if self._tick_count % self.settings.summary_every_ticks == 0:

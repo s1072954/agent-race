@@ -50,7 +50,7 @@ class RootAgent:
         self.llm = llm
         self.workspace = self.store.upsert_agent(spec.id, spec.name, spec.model)
 
-    async def run_tick(self, market_snapshot: dict[str, Any]) -> RootAgentDecision:
+    async def run_tick(self, market_snapshot: dict[str, Any], *, allow_subagents: bool = True) -> RootAgentDecision:
         self.store.record_event("tick_started", "Root agent tick started", agent_id=self.spec.id)
         root_prompt = _read_prompt(self.settings.prompt_dir / "root_agent.md")
         recent_events = self.store.recent_events(self.spec.id, limit=8)
@@ -92,7 +92,14 @@ class RootAgent:
             status = "fallback"
             self.store.record_event("root_agent_error", str(exc), agent_id=self.spec.id)
 
-        subagent_results = await self._run_subagents(decision, market_snapshot)
+        subagent_results = await self._run_subagents(decision, market_snapshot) if allow_subagents else []
+        if decision.subagent_tasks and not allow_subagents:
+            self.store.record_event(
+                "subagent_deferred",
+                f"Sub-agent tasks deferred; configured cadence is every {self.settings.subagent_every_ticks} ticks",
+                agent_id=self.spec.id,
+                payload={"tasks": [item.model_dump() for item in decision.subagent_tasks]},
+            )
         payload = {
             "decision": decision.model_dump(),
             "subagent_results": [item.model_dump() for item in subagent_results],

@@ -61,6 +61,7 @@ class Settings:
     binance_query_max_borrowable: bool
     max_parallel_llm_calls: int
     max_subagent_tasks: int
+    subagent_every_ticks: int
     base_path: str
     tick_seconds: int
     fallback_tick_seconds: int
@@ -104,6 +105,7 @@ def load_settings(env_path: str | Path = DEFAULT_ENV_PATH) -> Settings:
         binance_query_max_borrowable=env_bool("BINANCE_QUERY_MAX_BORROWABLE", False),
         max_parallel_llm_calls=max(1, env_int("AGENT_RACE_MAX_PARALLEL_LLM_CALLS", 1)),
         max_subagent_tasks=max(0, env_int("AGENT_RACE_MAX_SUBAGENT_TASKS", 1)),
+        subagent_every_ticks=max(1, env_int("AGENT_RACE_SUBAGENT_EVERY_TICKS", 1)),
         base_path=base_path.rstrip("/"),
         tick_seconds=max(60, env_int("AGENT_RACE_TICK_SECONDS", 900)),
         fallback_tick_seconds=max(60, env_int("AGENT_RACE_FALLBACK_TICK_SECONDS", 900)),
