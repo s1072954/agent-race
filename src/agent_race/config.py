@@ -85,9 +85,6 @@ def load_settings(env_path: str | Path = DEFAULT_ENV_PATH) -> Settings:
     load_env_file(env_path)
     default_models = [
         "qwen/qwen3-coder-480b-a35b-instruct",
-        "nvidia/nemotron-3-super-120b-a12b",
-        "minimaxai/minimax-m2.7",
-        "z-ai/glm4.7",
     ]
     base_path = os.getenv("AGENT_RACE_BASE_PATH", "/agent-race").strip() or "/agent-race"
     if not base_path.startswith("/"):

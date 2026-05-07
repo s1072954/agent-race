@@ -1,7 +1,7 @@
 import pytest
 
 from agent_race.agents.protocol import RootAgentDecision, SubAgentResult, parse_json_model
-from agent_race.agents.root_agent import _compact_market_snapshot
+from agent_race.agents.root_agent import _compact_market_snapshot, _merge_memory_backlog
 
 
 def test_parse_json_model_accepts_markdown_fenced_json() -> None:
@@ -57,3 +57,27 @@ def test_compact_market_snapshot_removes_large_sources() -> None:
     assert "sources" not in compact
     assert len(compact["opportunities"]) == 12
     assert "unused" not in compact["opportunities"][0]["evidence"]
+
+
+def test_merge_memory_backlog_preserves_repeated_ideas() -> None:
+    decision = RootAgentDecision(
+        summary="no trade",
+        strategy_candidates=[
+            {
+                "title": "Stablecoin basis monitor",
+                "hypothesis": "Track USDT/USD route dislocations across venues.",
+                "expected_edge_bps": 4,
+                "risk_score": 3,
+                "validation_plan": "Fetch executable bid/ask and transfer constraints.",
+            }
+        ],
+        next_actions=["驗證 OKX 與 Bybit 的借幣庫存"],
+    )
+
+    first = _merge_memory_backlog([], decision, "2026-05-07T00:00:00+00:00")
+    second = _merge_memory_backlog(first, decision, "2026-05-07T00:03:00+00:00")
+
+    assert len(second) == 2
+    assert second[0]["last_seen"] == "2026-05-07T00:03:00+00:00"
+    assert any(item["title"] == "Stablecoin basis monitor" and item["sightings"] == 2 for item in second)
+    assert any(item["type"] == "next_action" for item in second)

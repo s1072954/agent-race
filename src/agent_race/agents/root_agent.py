@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent_race.memory.store import AgentRaceStore, utc_now
 
 
 T = TypeVar("T", bound=BaseModel)
+MAX_MEMORY_BACKLOG_ITEMS = 40
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class RootAgent:
                 "market_snapshot": agent_market_snapshot,
                 "recent_events": recent_events,
                 "memory_note": memory_note[-4000:],
+                "agent_directive": _agent_directive(self.spec),
                 "required_json_schema": RootAgentDecision.model_json_schema(),
             },
             ensure_ascii=False,
@@ -281,10 +284,17 @@ class RootAgent:
         return path.read_text(encoding="utf-8")
 
     def _write_memory_note(self, decision: RootAgentDecision, subagent_results: list[SubAgentResult]) -> None:
+        now = utc_now()
+        backlog_path = self.workspace / "strategy_backlog.json"
+        backlog = _merge_memory_backlog(_read_memory_backlog(backlog_path), decision, now)
+        backlog_path.write_text(json.dumps(backlog, ensure_ascii=False, indent=2), encoding="utf-8")
         lines = [
             f"# {self.spec.name}",
             "",
-            f"Last updated: {utc_now()}",
+            f"Last updated: {now}",
+            "",
+            "## Persistent Strategy Backlog",
+            *_format_memory_backlog(backlog),
             "",
             "## Latest Summary",
             decision.summary,
@@ -306,6 +316,169 @@ def _read_prompt(path: Path, default: str = "") -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return default
+
+
+def _agent_directive(spec: AgentSpec) -> dict[str, Any]:
+    if "qwen" not in spec.model.lower():
+        return {}
+    return {
+        "mode": "qwen_high_frequency_explorer",
+        "goal": "Explore more diverse programmable crypto opportunities while preserving continuity across ticks.",
+        "exploration_scope": [
+            "funding and basis",
+            "spot spread after executable depth",
+            "stablecoin basis",
+            "futures calendar or perp basis",
+            "triangular and route arbitrage",
+            "listing or event liquidity dislocations",
+            "order-book microstructure",
+            "exchange fee or rebate dislocations",
+            "deposit and withdrawal route constraints",
+        ],
+        "memory_rule": "Use memory_note and the persistent backlog to continue old hypotheses, retire stale blockers, and avoid repeating the same blocked idea unless new evidence appears.",
+    }
+
+
+def _read_memory_backlog(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _merge_memory_backlog(
+    existing: list[dict[str, Any]],
+    decision: RootAgentDecision,
+    now: str,
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in existing:
+        key = str(item.get("key") or _memory_key(item.get("title") or item.get("note") or ""))
+        if not key:
+            continue
+        merged[key] = {
+            "key": key,
+            "type": str(item.get("type") or "idea"),
+            "title": str(item.get("title") or "Untitled"),
+            "note": str(item.get("note") or "")[:500],
+            "validation_plan": str(item.get("validation_plan") or "")[:500],
+            "expected_edge_bps": item.get("expected_edge_bps"),
+            "risk_score": item.get("risk_score"),
+            "first_seen": str(item.get("first_seen") or now),
+            "last_seen": str(item.get("last_seen") or now),
+            "sightings": int(item.get("sightings") or 1),
+        }
+
+    for strategy in decision.strategy_candidates:
+        key = _memory_key(f"strategy {strategy.title} {strategy.market}")
+        _upsert_memory_item(
+            merged,
+            key=key,
+            item_type="strategy",
+            title=strategy.title,
+            note=strategy.hypothesis,
+            validation_plan=strategy.validation_plan,
+            expected_edge_bps=strategy.expected_edge_bps,
+            risk_score=strategy.risk_score,
+            now=now,
+        )
+
+    for action in decision.next_actions[:8]:
+        key = _memory_key(f"action {action}")
+        _upsert_memory_item(
+            merged,
+            key=key,
+            item_type="next_action",
+            title=action[:120],
+            note=action,
+            validation_plan=action,
+            expected_edge_bps=None,
+            risk_score=None,
+            now=now,
+        )
+
+    return sorted(
+        merged.values(),
+        key=lambda item: (str(item.get("last_seen") or ""), int(item.get("sightings") or 0)),
+        reverse=True,
+    )[:MAX_MEMORY_BACKLOG_ITEMS]
+
+
+def _upsert_memory_item(
+    merged: dict[str, dict[str, Any]],
+    *,
+    key: str,
+    item_type: str,
+    title: str,
+    note: str,
+    validation_plan: str,
+    expected_edge_bps: float | None,
+    risk_score: float | None,
+    now: str,
+) -> None:
+    current = merged.get(key)
+    if current is None:
+        merged[key] = {
+            "key": key,
+            "type": item_type,
+            "title": title[:160],
+            "note": note[:500],
+            "validation_plan": validation_plan[:500],
+            "expected_edge_bps": expected_edge_bps,
+            "risk_score": risk_score,
+            "first_seen": now,
+            "last_seen": now,
+            "sightings": 1,
+        }
+        return
+    current.update(
+        {
+            "type": item_type,
+            "title": title[:160],
+            "note": note[:500],
+            "validation_plan": validation_plan[:500],
+            "expected_edge_bps": expected_edge_bps,
+            "risk_score": risk_score,
+            "last_seen": now,
+            "sightings": int(current.get("sightings") or 0) + 1,
+        }
+    )
+
+
+def _format_memory_backlog(backlog: list[dict[str, Any]]) -> list[str]:
+    if not backlog:
+        return ["- No persistent ideas recorded yet."]
+    lines = []
+    for item in backlog[:16]:
+        edge = item.get("expected_edge_bps")
+        risk = item.get("risk_score")
+        metrics = []
+        if edge is not None:
+            metrics.append(f"edge={edge}bps")
+        if risk is not None:
+            metrics.append(f"risk={risk}")
+        metrics.append(f"seen={item.get('sightings', 1)}")
+        title = str(item.get("title") or "Untitled")
+        note = str(item.get("note") or "")
+        plan = str(item.get("validation_plan") or "")
+        detail = note or plan
+        if detail:
+            lines.append(f"- [{item.get('type', 'idea')}; {', '.join(metrics)}] {title}: {detail}")
+        else:
+            lines.append(f"- [{item.get('type', 'idea')}; {', '.join(metrics)}] {title}")
+    return lines
+
+
+def _memory_key(text: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+    if normalized:
+        return normalized[:120]
+    return hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:24]
 
 
 def _compact_market_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
