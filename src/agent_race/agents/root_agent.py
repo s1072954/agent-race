@@ -79,6 +79,7 @@ class RootAgent:
                 ],
                 max_tokens=1200,
                 temperature=0.25,
+                retries=0,
             )
             decision = await self._parse_or_repair(
                 content=result.content,
@@ -92,8 +93,17 @@ class RootAgent:
             status = "fallback"
             self.store.record_event("root_agent_error", str(exc), agent_id=self.spec.id)
 
-        subagent_results = await self._run_subagents(decision, market_snapshot) if allow_subagents else []
-        if decision.subagent_tasks and not allow_subagents:
+        subagent_results: list[SubAgentResult] = []
+        if status == "ok" and allow_subagents:
+            subagent_results = await self._run_subagents(decision, market_snapshot)
+        elif decision.subagent_tasks and status != "ok":
+            self.store.record_event(
+                "subagent_skipped",
+                "Sub-agent tasks skipped because the root response used fallback",
+                agent_id=self.spec.id,
+                payload={"tasks": [item.model_dump() for item in decision.subagent_tasks]},
+            )
+        elif decision.subagent_tasks and not allow_subagents:
             self.store.record_event(
                 "subagent_deferred",
                 f"Sub-agent tasks deferred; configured cadence is every {self.settings.subagent_every_ticks} ticks",
@@ -113,7 +123,10 @@ class RootAgent:
             score_delta=score_delta,
             payload=payload,
         )
-        for strategy in decision.strategy_candidates:
+        recordable_strategies = [
+            strategy for strategy in decision.strategy_candidates if strategy.expected_edge_bps > 0
+        ]
+        for strategy in recordable_strategies:
             self.store.record_strategy(
                 agent_id=self.spec.id,
                 title=strategy.title,
@@ -125,7 +138,7 @@ class RootAgent:
         self._write_memory_note(decision, subagent_results)
         self.store.record_event(
             "tick_completed",
-            f"Tick completed with {len(decision.strategy_candidates)} strategies",
+            f"Tick completed with {len(recordable_strategies)} recordable strategies",
             agent_id=self.spec.id,
             payload={"score_delta": score_delta, "status": status},
         )
@@ -159,6 +172,7 @@ class RootAgent:
                     ],
                     max_tokens=700,
                     temperature=0.2,
+                    retries=0,
                 )
                 parsed = await self._parse_or_repair(
                     content=result.content,
@@ -382,6 +396,8 @@ def _merge_memory_backlog(
         }
 
     for strategy in decision.strategy_candidates:
+        if strategy.expected_edge_bps <= 0:
+            continue
         key = _memory_key(f"strategy {strategy.title} {strategy.market}")
         _upsert_memory_item(
             merged,
@@ -396,6 +412,8 @@ def _merge_memory_backlog(
         )
 
     for action in decision.next_actions[:8]:
+        if len(action.strip()) < 6:
+            continue
         key = _memory_key(f"action {action}")
         _upsert_memory_item(
             merged,

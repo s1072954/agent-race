@@ -22,6 +22,10 @@ class SchedulerConfigRequest(BaseModel):
     fallback_tick_seconds: int = Field(ge=60, le=86_400)
 
 
+class RootChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.scheduler_enabled:
@@ -68,6 +72,11 @@ async def trigger_tick() -> dict[str, bool]:
 async def update_config(config: SchedulerConfigRequest) -> dict[str, object]:
     updated = scheduler.update_config(config.tick_seconds, config.fallback_tick_seconds)
     return {"ok": True, "scheduler_config": updated}
+
+
+@app.post(f"{base}/api/root-chat")
+async def root_chat(request: RootChatRequest) -> dict[str, object]:
+    return await scheduler.ask_root_agent(request.message)
 
 
 DASHBOARD_HTML = """<!doctype html>
@@ -119,7 +128,8 @@ DASHBOARD_HTML = """<!doctype html>
       font-weight: 700;
       cursor: pointer;
     }
-    input {
+    button:disabled { cursor: progress; opacity: 0.65; }
+    input, textarea {
       width: 100%;
       min-height: 38px;
       background: #0f1316;
@@ -129,10 +139,13 @@ DASHBOARD_HTML = """<!doctype html>
       padding: 8px 10px;
       font: inherit;
     }
+    textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
     label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
     main { padding: 20px; display: grid; gap: 18px; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
     .control-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; align-items: end; }
+    .chat-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; align-items: end; }
+    .chat-answer { margin-top: 12px; background: #0f1316; border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-height: 72px; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -197,6 +210,7 @@ DASHBOARD_HTML = """<!doctype html>
       header { align-items: flex-start; flex-direction: column; }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .chat-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 560px) {
       main { padding: 12px; }
@@ -251,6 +265,17 @@ DASHBOARD_HTML = """<!doctype html>
     <section class="panel">
       <h2>LLM 監控摘要</h2>
       <div class="summary markdown" id="arena-summary">載入中...</div>
+    </section>
+    <section class="panel">
+      <h2>詢問 Root Agent</h2>
+      <div class="chat-grid">
+        <label>
+          問題
+          <textarea id="root-question" maxlength="2000" placeholder="例如：你目前最看好的策略是什麼？還卡在哪些驗證？下一步要做什麼？"></textarea>
+        </label>
+        <button id="ask-root">送出問題</button>
+      </div>
+      <div class="summary markdown chat-answer" id="root-answer">尚未提問。</div>
     </section>
     <section class="panel">
       <h2>流程瓶頸</h2>
@@ -517,6 +542,31 @@ DASHBOARD_HTML = """<!doctype html>
     document.getElementById("tick").addEventListener("click", async () => {
       await fetch(`${BASE}/api/tick`, { method: "POST" });
       setTimeout(refresh, 1000);
+    });
+    document.getElementById("ask-root").addEventListener("click", async () => {
+      const button = document.getElementById("ask-root");
+      const answer = document.getElementById("root-answer");
+      const message = document.getElementById("root-question").value.trim();
+      if (!message) {
+        answer.textContent = "請先輸入問題。";
+        return;
+      }
+      button.disabled = true;
+      answer.textContent = "Root Agent 思考中...";
+      try {
+        const res = await fetch(`${BASE}/api/root-chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        answer.innerHTML = `${markdownToHtml(data.answer || "沒有收到回覆。")}<p class="muted">回覆時間：${twTime(data.ts)}${data.model ? `，模型：${html(data.model)}` : ""}</p>`;
+        refresh();
+      } catch (error) {
+        answer.textContent = `Root Agent 暫時無法回覆：${error}`;
+      } finally {
+        button.disabled = false;
+      }
     });
     document.getElementById("save-config").addEventListener("click", async () => {
       const tickSeconds = Number(document.getElementById("interval-input").value);

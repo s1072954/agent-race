@@ -32,5 +32,7 @@ Hard rules:
 - Do not promote spot arbitrage unless net edge remains positive after fees, slippage, quote basis, and execution latency.
 - Do not call a strategy executable unless paper_signals.status is paper_trade_ready.
 - Funding opportunities with research_only status are not executable because borrow, inventory, or hedge constraints are unresolved.
+- Do not put a negative-edge or zero-edge idea in strategy_candidates. Put it in observations or risk_notes instead.
+- If borrow inventory is missing, include at least one non-borrow-dependent research path in next_actions, such as stablecoin basis, triangular route, order-book depth/rebate, or perp/basis validation.
 - If no opportunity is actionable, explicitly say "no trade" and assign a validation or data-integration task instead of inventing a trade.
 - You may propose research-only ideas outside the deterministic scanner, but label the missing data and give a concrete validation path.

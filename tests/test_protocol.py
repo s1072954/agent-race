@@ -81,3 +81,25 @@ def test_merge_memory_backlog_preserves_repeated_ideas() -> None:
     assert second[0]["last_seen"] == "2026-05-07T00:03:00+00:00"
     assert any(item["title"] == "Stablecoin basis monitor" and item["sightings"] == 2 for item in second)
     assert any(item["type"] == "next_action" for item in second)
+
+
+def test_merge_memory_backlog_skips_generic_and_negative_edge_items() -> None:
+    decision = RootAgentDecision(
+        summary="no trade",
+        strategy_candidates=[
+            {
+                "title": "Negative spot spread",
+                "hypothesis": "Fees exceed the edge.",
+                "expected_edge_bps": -2,
+                "risk_score": 6,
+                "validation_plan": "Keep as observation only.",
+            }
+        ],
+        next_actions=["驗證", "檢查 stablecoin basis 的 bid/ask 深度與手續費。"],
+    )
+
+    backlog = _merge_memory_backlog([], decision, "2026-05-08T00:00:00+00:00")
+
+    assert all(item["type"] != "strategy" for item in backlog)
+    assert len(backlog) == 1
+    assert backlog[0]["type"] == "next_action"

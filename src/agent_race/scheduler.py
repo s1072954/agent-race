@@ -163,6 +163,7 @@ class AgentRaceScheduler:
                 ],
                 max_tokens=700,
                 temperature=0.15,
+                retries=0,
             )
             summary = result.content.strip()
         except Exception as exc:  # noqa: BLE001
@@ -175,6 +176,74 @@ class AgentRaceScheduler:
                 "model": self.settings.nvidia_summary_model,
             },
         )
+
+    async def ask_root_agent(self, question: str) -> dict[str, Any]:
+        cleaned = question.strip()
+        now = utc_now()
+        if not cleaned:
+            return {"ok": False, "ts": now, "answer": "請先輸入問題。", "model": None}
+        if not self.agents:
+            return {"ok": False, "ts": now, "answer": "目前沒有可用的 Root Agent。", "model": None}
+
+        agent = self.agents[0]
+        if self._running_once.locked():
+            answer = (
+                "Root Agent 目前正在執行本輪分析，為了避免額外 LLM 呼叫造成 timeout 或限流，"
+                "這次先不插隊呼叫模型。你可以先查看監控摘要、事件與策略候選；本輪完成後再發問。"
+            )
+            return {"ok": False, "ts": now, "answer": answer, "model": agent.spec.model, "busy": True}
+        if not self.settings.can_call_llm:
+            return {"ok": False, "ts": now, "answer": "NVIDIA_API_KEY 未設定，無法直接詢問 Root Agent。", "model": None}
+
+        overview = self._compact_overview()
+        memory_path = agent.workspace / "memory.md"
+        memory_note = memory_path.read_text(encoding="utf-8")[-5000:] if memory_path.exists() else ""
+        prompt = json.dumps(
+            {
+                "instruction": (
+                    "你是目前這個加密貨幣套利系統的 Root Agent。"
+                    "請用繁體中文回答使用者問題，務必根據提供的狀態、記憶與市場資料。"
+                    "不可建議實盤下單，不可聲稱已經下單。"
+                    "如果策略不可執行，請明確說出阻礙與下一步驗證。"
+                ),
+                "user_question": cleaned,
+                "utc_now": now,
+                "agent": agent.spec.__dict__,
+                "runtime": self.runtime_status(),
+                "overview": overview,
+                "memory_note": memory_note,
+            },
+            ensure_ascii=False,
+        )
+        try:
+            result = await self.llm.chat(
+                agent_id=agent.spec.id,
+                model=agent.spec.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是 Root Agent 的對話介面。只用繁體中文回答。"
+                            "保持務實、具體、風險優先；不要輸出 JSON；不要建議實盤下單。"
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=700,
+                temperature=0.2,
+                retries=0,
+            )
+            answer = result.content.strip()
+            payload = {"question": cleaned, "answer": answer, "model": agent.spec.model, "ts": now}
+            self.store.set_state("last_root_chat", payload)
+            self.store.record_event("root_chat_completed", cleaned[:160], agent_id=agent.spec.id, payload=payload)
+            return {"ok": True, **payload}
+        except Exception as exc:  # noqa: BLE001
+            answer = f"Root Agent 暫時無法回覆：{exc}"
+            payload = {"question": cleaned, "answer": answer, "model": agent.spec.model, "ts": now}
+            self.store.set_state("last_root_chat", payload)
+            self.store.record_event("root_chat_error", str(exc), agent_id=agent.spec.id, payload=payload)
+            return {"ok": False, **payload}
 
     def _compact_overview(self) -> dict[str, Any]:
         overview = self.store.overview()
